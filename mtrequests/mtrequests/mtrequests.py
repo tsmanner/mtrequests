@@ -1,37 +1,49 @@
 import multiprocessing
 import requests
-import time
-
-class GetRequest(multiprocessing.Process):
-    def __init__(self, *args, **kwargs):
-        self.q = multiprocessing.Queue()
-        super().__init__(target=_get, args=(self.q, args, kwargs))
-        self.args = args
-        self.kwargs = kwargs
-
-    def __hash__(self):
-        return 0
-
-    def __eq__(self, other):
-        return hash(self) == hash(other)
+import uuid
 
 
-def _get(q, args, kwargs):
-    print("Requesting", *args, **kwargs)
-    r = requests.get(*args, **kwargs)
-    q.put(r)
-    print("Done...")
+def get(tag, *args):
+    return tag, requests.get(*args)
 
 
 class Requester:
-    def __init__(self):
-        self.requests = []
+    def __init__(self, thread_count=5):
+        self.callbacks = {}
+        self.error_callbacks = {}
+        self.pool = multiprocessing.Pool(thread_count)
+
+    def get(self, callback, *args, error_callback=None):
+        tag = uuid.uuid4()
+        while tag in self.callbacks:
+            tag = uuid.uuid4()
+        self.pool.apply_async(get, args=(tag,) + args, callback=self.callback_wrapper, error_callback=self.error_wrapper)
+        self.callbacks[tag] = callback
+        self.error_callbacks[tag] = callback
+        return tag
+
+    def callback_wrapper(self, response):
+        tag = response[0]
+        self.callbacks[tag](response)
+        del self.callbacks[tag]
+        del self.error_callbacks[tag]
+
+    def error_wrapper(self, response):
+        tag = response[0]
+        self.error_callbacks[tag](response)
+        del self.callbacks[tag]
+        del self.error_callbacks[tag]
+
 
 if __name__ == "__main__":
-    rq = GetRequest('https://api.github.com/events')
-    rq.start()
-    while rq.is_alive():
+    tags = set()
+
+    def print_response(resp):
+        print(resp[0], resp[1], resp[1].url)
+        tags.remove(resp[0])
+
+    r = Requester()
+    tags.add(r.get(print_response, 'https://api.github.com/events'))
+    tags.add(r.get(print_response, 'https://github.com/tsmanner/'))
+    while len(tags) > 0:
         pass
-    rq.join()
-    resp = rq.q.get()
-    print("response:", resp, resp.json())
